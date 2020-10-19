@@ -299,6 +299,7 @@ decl_module! {
 
 		fn deposit_event() = default;
 
+		// why do we need this? people can always use `call` to do the transfer
 		/// Withdraw balance from EVM into currency/balances module.
 		#[weight = 0]
 		fn withdraw(origin, address: H160, value: BalanceOf<T>) {
@@ -314,6 +315,8 @@ decl_module! {
 		}
 
 		/// Issue an EVM call operation. This is similar to a message call transaction in Ethereum.
+		// why gas_price * gas_limit? why how much people paying matters here?
+		// This should be T::ConvertGasToWeight::convert(gas_limit)
 		#[weight = (*gas_price).saturated_into::<Weight>().saturating_mul(*gas_limit as Weight)]
 		fn call(
 			origin,
@@ -345,11 +348,13 @@ decl_module! {
 				},
 			}
 
+			// should refund unused gas as weight
 			Ok(Pays::No.into())
 		}
 
 		/// Issue an EVM create operation. This is similar to a contract creation transaction in
 		/// Ethereum.
+		// Why do we need three different calls? Can we just have an enum to indicate the action like pallet-ethereum does?
 		#[weight = (*gas_price).saturated_into::<Weight>().saturating_mul(*gas_limit as Weight)]
 		fn create(
 			origin,
@@ -432,6 +437,9 @@ impl<T: Trait> Module<T> {
 		if current.nonce < new.nonce {
 			// ASSUME: in one single EVM transaction, the nonce will not increase more than
 			// `u128::max_value()`.
+			// Account nonce is u32 for Polkadot, very unlikely to be u128 for most of the chains
+			// But I agree we should be able to assume it should never overflow to whatever the nonce type is
+			// This is super inefficient
 			for _ in 0..(new.nonce - current.nonce).low_u128() {
 				frame_system::Module::<T>::inc_account_nonce(&account_id);
 			}
@@ -439,9 +447,11 @@ impl<T: Trait> Module<T> {
 
 		if current.balance > new.balance {
 			let diff = current.balance - new.balance;
+			// why low_u128 is needed? unique_saturated_into should be enough.
 			T::Currency::slash(&account_id, diff.low_u128().unique_saturated_into());
 		} else if current.balance < new.balance {
 			let diff = new.balance - current.balance;
+			// ditto
 			T::Currency::deposit_creating(&account_id, diff.low_u128().unique_saturated_into());
 		}
 	}
@@ -451,8 +461,8 @@ impl<T: Trait> Module<T> {
 		let account = Self::account_basic(address);
 		let code_len = AccountCodes::decode_len(address).unwrap_or(0);
 
-		account.nonce == U256::zero() &&
-			account.balance == U256::zero() &&
+		account.nonce.is_zero() &&
+			account.is_zero() &&
 			code_len == 0
 	}
 
@@ -471,6 +481,8 @@ impl<T: Trait> Module<T> {
 		let balance = T::Currency::free_balance(&account_id);
 
 		Account {
+			// this doesn't feel right that we need to convert into u128 and then into u256
+			// what happen if the Balance type is U256?
 			nonce: U256::from(UniqueSaturatedInto::<u128>::unique_saturated_into(nonce)),
 			balance: U256::from(UniqueSaturatedInto::<u128>::unique_saturated_into(balance)),
 		}
